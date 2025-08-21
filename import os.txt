@@ -1,0 +1,117 @@
+import os
+from datetime import datetime
+from flask import Flask, render_template, redirect, url_for, flash
+from flask_login import LoginManager, current_user
+
+from models import db, User
+
+# Blueprints (imported after app is created)
+from routes.public import public_bp
+from routes.auth import auth_bp
+from routes.adopter import adopter_bp
+from routes.shelter import shelter_bp
+from routes.admin import admin_bp
+
+
+def create_app():
+    app = Flask(__name__, static_folder='static', template_folder='templates')
+    app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key')
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///app.db'
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    app.config['UPLOAD_FOLDER'] = os.path.join(app.root_path, 'static', 'images')
+
+    # Ensure upload folder exists
+    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+    # Init extensions
+    db.init_app(app)
+
+    login_manager = LoginManager()
+    login_manager.login_view = 'auth.login'
+    login_manager.init_app(app)
+
+    @login_manager.user_loader
+    def load_user(user_id):
+        return db.session.get(User, int(user_id))
+
+    # Register blueprints
+    app.register_blueprint(public_bp)
+    app.register_blueprint(auth_bp, url_prefix='/auth')
+    app.register_blueprint(adopter_bp, url_prefix='/adopter')
+    app.register_blueprint(shelter_bp, url_prefix='/shelter')
+    app.register_blueprint(admin_bp, url_prefix='/admin')
+
+    # Simple index route wrapper
+    @app.route('/')
+    def home():
+        return render_template('index.html')
+
+    # CLI: initialize DB and create default admin if not exists
+    @app.cli.command('init-db')
+    def init_db():
+        """Initialize the database and create an admin user if none exists."""
+        with app.app_context():
+            db.create_all()
+            # Create default admin if not exists
+            admin = User.query.filter_by(email='admin@petlink.local').first()
+            if not admin:
+                admin = User(name='Administrator', email='admin@petlink.local', role='admin')
+                admin.set_password('admin123')
+                db.session.add(admin)
+                db.session.commit()
+                print('Created default admin: admin@petlink.local / admin123')
+            print('Database initialized.')
+
+    # Error handlers
+    @app.errorhandler(403)
+    def forbidden(e):
+        return render_template('errors/403.html'), 403
+
+    @app.errorhandler(404)
+    def not_found(e):
+        return render_template('errors/404.html'), 404
+
+    @app.errorhandler(500)
+    def server_error(e):
+        return render_template('errors/500.html'), 500
+
+    return app
+
+
+app = create_app()
+
+
+if __name__ == '__main__':
+    # Ensure database exists on first run and create default admin
+    with app.app_context():
+        db.create_all()
+        admin = User.query.filter_by(email='admin@petlink.local').first()
+        if not admin:
+            admin = User(name='Administrator', email='admin@petlink.local', role='admin')
+            admin.set_password('admin123')
+            db.session.add(admin)
+            db.session.commit()
+        # Seed demo shelter and pets if empty
+        from models import Shelter, Pet
+        if not Shelter.query.first():
+            demo_owner = User.query.filter_by(email='shelter@petlink.local').first()
+            if not demo_owner:
+                demo_owner = User(name='Happy Paws', email='shelter@petlink.local', role='shelter')
+                demo_owner.set_password('shelter123')
+                db.session.add(demo_owner)
+                db.session.commit()
+            demo_shelter = Shelter(name='Happy Paws Shelter', contact='(555) 123-4567', verified=True, user_id=demo_owner.id)
+            db.session.add(demo_shelter)
+            db.session.commit()
+            sample_pets = [
+                dict(name='Buddy', type='Dog', breed='Labrador Retriever', age=3, gender='Male', vaccination_status='Up to date', status='Available', description='Friendly and energetic. Loves fetch and belly rubs.', location='Seattle, WA', adoption_fee=120.0, image='dog_buddy.jpg'),
+                dict(name='Luna', type='Cat', breed='Siamese', age=2, gender='Female', vaccination_status='Up to date', status='Available', description='Calm and affectionate. Purr machine at night.', location='Seattle, WA', adoption_fee=80.0, image='cat_luna.jpg'),
+                dict(name='Max', type='Dog', breed='German Shepherd', age=4, gender='Male', vaccination_status='Up to date', status='Reserved', description='Smart and loyal. Knows basic commands.', location='Bellevue, WA', adoption_fee=150.0, image='dog_max.jpg'),
+                dict(name='Coco', type='Rabbit', breed='Holland Lop', age=1, gender='Female', vaccination_status='N/A', status='Available', description='Adorable and curious. Enjoys gentle handling.', location='Redmond, WA', adoption_fee=40.0, image='rabbit_coco.jpg'),
+            ]
+            for sp in sample_pets:
+                pet = Pet(**sp, shelter_id=demo_shelter.id)
+                db.session.add(pet)
+            db.session.commit()
+    port = int(os.environ.get('PORT', 5000))
+    app.run(debug=True, host='0.0.0.0', port=port)
